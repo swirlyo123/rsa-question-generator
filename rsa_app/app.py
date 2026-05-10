@@ -2,6 +2,8 @@ import streamlit as st
 import anthropic
 import random
 import os
+import json
+from datetime import datetime
 
 from questions_db import QUESTIONS
 
@@ -73,6 +75,22 @@ with st.sidebar:
 @st.cache_resource
 def get_client(key: str) -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=key)
+
+
+def _save_to_sheets(theme: str, question: str, panel: str):
+    import requests as _req
+    url = st.secrets.get("SHEETS_WEBAPP_URL", "")
+    if not url:
+        return
+    try:
+        _req.post(url, json={
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "theme": theme,
+            "question": question,
+            "panel": panel,
+        }, timeout=5)
+    except Exception:
+        pass
 
 
 for _k, _v in [
@@ -243,6 +261,7 @@ with tab_chat:
                 client = get_client(api_key)
                 reply = chat_generate(user_input.strip(), client)
                 st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                _save_to_sheets("💬 Chat", user_input.strip(), reply)
             except anthropic.AuthenticationError:
                 st.error("Invalid API key.")
             except anthropic.RateLimitError:
@@ -267,6 +286,7 @@ with tab_chat:
                     client = get_client(api_key)
                     reply = chat_generate(st.session_state.chat_history[-1]["content"], client)
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                    _save_to_sheets("🎲 Surprise", st.session_state.chat_history[-2]["content"], reply)
                 except Exception as e:
                     st.error(str(e))
             st.rerun()
@@ -306,6 +326,7 @@ with tab_gen:
                     q, p = generate_question(selected_theme, client)
                     st.session_state.generated_question = q
                     st.session_state.generated_panel = p
+                    _save_to_sheets(selected_theme, q, p)
                 except anthropic.AuthenticationError:
                     st.error("Invalid API key.")
                 except anthropic.RateLimitError:
@@ -427,9 +448,6 @@ def save_feedback(entry):
     entries.append(entry)
     with open(FEEDBACK_FILE, "w") as f:
         json.dump(entries, f, indent=2)
-
-import json
-from datetime import datetime
 
 with tab_feedback:
     st.markdown("### 📝 Team Feedback")
