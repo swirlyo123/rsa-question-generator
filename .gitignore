@@ -1,0 +1,7 @@
+node_modules/
+.env
+rsa_app/.streamlit/secrets.toml
+rsa_app/feedback_log.json
+__pycache__/
+*.pyc
+.DS_Store
