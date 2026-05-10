@@ -352,57 +352,20 @@ with tab_saved:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — FEEDBACK
 # ══════════════════════════════════════════════════════════════════════════════
-FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback_log.json")
-
-
-def _get_supabase():
-    try:
-        from supabase import create_client
-        url = st.secrets.get("SUPABASE_URL", "")
-        key = st.secrets.get("SUPABASE_KEY", "")
-        if url and key:
-            return create_client(url, key)
-    except Exception:
-        pass
-    return None
-
-
-def load_feedback():
-    client = _get_supabase()
-    if client:
-        try:
-            resp = client.table("feedback").select("*").order("created_at", desc=False).execute()
-            return resp.data
-        except Exception:
-            pass
-    if os.path.exists(FEEDBACK_FILE):
-        try:
-            with open(FEEDBACK_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
-
-
 def save_feedback(entry):
-    client = _get_supabase()
-    if client:
+    import requests as _req
+    url = st.secrets.get("SHEETS_WEBAPP_URL", "")
+    if url:
         try:
-            client.table("feedback").insert(entry).execute()
+            _req.post(url, json={"type": "feedback", **entry}, timeout=5)
             return
         except Exception:
             pass
-    entries = load_feedback()
-    entries.append(entry)
-    with open(FEEDBACK_FILE, "w") as f:
-        json.dump(entries, f, indent=2)
 
 
 with tab_feedback:
     st.markdown("### 📝 Team Feedback")
-    st.caption("Rate generated questions, suggest improvements, and help make the AI better.")
-
-    st.markdown("#### Submit Feedback on a Generated Question")
+    st.caption("Rate generated questions and help make the AI better. All feedback is saved to Google Sheets permanently.")
 
     with st.form("feedback_form"):
         fb_name = st.text_input("Your name / initials", placeholder="e.g. Raunaq, Team KSH, RR...")
@@ -459,59 +422,11 @@ with tab_feedback:
                 "name": fb_name.strip() or "Anonymous",
                 "question": fb_question.strip(),
                 "rating": fb_rating,
-                "issues": fb_what_wrong,
+                "issues": ", ".join(fb_what_wrong),
                 "better_version": fb_better_version.strip(),
                 "theme_worked": fb_theme_worked,
                 "extra_notes": fb_extra.strip(),
             }
             save_feedback(entry)
-            st.success("Feedback saved!")
+            st.success("Feedback saved to Google Sheets!")
             st.balloons()
-
-    st.markdown("---")
-
-    all_fb = load_feedback()
-    st.markdown(f"#### All Feedback ({len(all_fb)} entries)")
-
-    if not all_fb:
-        st.info("No feedback yet. Generate a question, then come here to rate it!")
-    else:
-        ratings = [f["rating"] for f in all_fb]
-        avg = sum(ratings) / len(ratings)
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Feedback", len(all_fb))
-        col2.metric("Avg Rating", f"{avg:.1f} / 5")
-        col3.metric("5-Star Count", ratings.count(5))
-
-        from collections import Counter
-        all_issues = [issue for f in all_fb for issue in f.get("issues", [])]
-        if all_issues:
-            st.markdown("**Most common issues:**")
-            for issue, count in Counter(all_issues).most_common(5):
-                st.markdown(f"- `{issue}` — {count}x")
-
-        st.markdown("---")
-
-        for i, fb in enumerate(reversed(all_fb)):
-            stars = "⭐" * fb["rating"] + "☆" * (5 - fb["rating"])
-            label = f"[{fb['timestamp']}] {fb['name']} — {stars} — {fb['question'][:50]}..."
-            with st.expander(label, expanded=False):
-                st.markdown(f"**Rating:** {stars} ({fb['rating']}/5)")
-                st.markdown(f"**By:** {fb['name']} &nbsp;|&nbsp; **Theme worked:** {fb['theme_worked']}")
-                if fb["issues"]:
-                    st.markdown(f"**Issues:** {', '.join(fb['issues'])}")
-                st.markdown("**Question rated:**")
-                st.markdown(f'<div class="question-card">{fb["question"]}</div>', unsafe_allow_html=True)
-                if fb.get("better_version"):
-                    st.markdown("**Suggested improvement:**")
-                    st.markdown(f'<div class="question-card">{fb["better_version"]}</div>', unsafe_allow_html=True)
-                if fb.get("extra_notes"):
-                    st.markdown(f"**Extra notes:** {fb['extra_notes']}")
-
-        fb_text = json.dumps(all_fb, indent=2)
-        st.download_button(
-            "📥 Download All Feedback (JSON)",
-            data=fb_text,
-            file_name="rsa_feedback.json",
-            mime="application/json",
-        )
