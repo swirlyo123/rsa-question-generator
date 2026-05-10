@@ -388,7 +388,25 @@ with tab_saved:
 # ══════════════════════════════════════════════════════════════════════════════
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback_log.json")
 
+def _get_supabase():
+    try:
+        from supabase import create_client
+        url = st.secrets.get("SUPABASE_URL", "")
+        key = st.secrets.get("SUPABASE_KEY", "")
+        if url and key:
+            return create_client(url, key)
+    except Exception:
+        pass
+    return None
+
 def load_feedback():
+    client = _get_supabase()
+    if client:
+        try:
+            resp = client.table("feedback").select("*").order("created_at", desc=False).execute()
+            return resp.data
+        except Exception:
+            pass
     if os.path.exists(FEEDBACK_FILE):
         try:
             with open(FEEDBACK_FILE, "r") as f:
@@ -397,7 +415,16 @@ def load_feedback():
             return []
     return []
 
-def save_feedback(entries):
+def save_feedback(entry):
+    client = _get_supabase()
+    if client:
+        try:
+            client.table("feedback").insert(entry).execute()
+            return
+        except Exception:
+            pass
+    entries = load_feedback()
+    entries.append(entry)
     with open(FEEDBACK_FILE, "w") as f:
         json.dump(entries, f, indent=2)
 
@@ -463,8 +490,7 @@ with tab_feedback:
         if not fb_question.strip():
             st.error("Please paste a question to give feedback on.")
         else:
-            entries = load_feedback()
-            entries.append({
+            entry = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "name": fb_name.strip() or "Anonymous",
                 "question": fb_question.strip(),
@@ -473,9 +499,9 @@ with tab_feedback:
                 "better_version": fb_better_version.strip(),
                 "theme_worked": fb_theme_worked,
                 "extra_notes": fb_extra.strip(),
-            })
-            save_feedback(entries)
-            st.success(f"Feedback saved! ({len(entries)} total entries)")
+            }
+            save_feedback(entry)
+            st.success("Feedback saved!")
             st.balloons()
 
     st.markdown("---")
