@@ -23,11 +23,6 @@ st.markdown("""
         border-left: 4px solid #e63946; margin: 1rem 0;
         color: #cdd6f4; font-size: 1.05rem; line-height: 1.7;
     }
-    .panel-card {
-        background: #181825; border-radius: 12px; padding: 1.5rem;
-        border-left: 4px solid #89b4fa; margin: 1rem 0;
-        color: #cdd6f4; font-size: 1rem; line-height: 1.7;
-    }
     .ep-header { color: #a6e3a1; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem; }
     .badge {
         display: inline-block; padding: 0.2rem 0.6rem;
@@ -52,7 +47,6 @@ MODEL = "claude-sonnet-4-6"
 with st.sidebar:
     st.markdown("## 💔 RSA Question Generator")
     st.markdown("---")
-    # Try env var → secrets.toml → manual input (in that order)
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         try:
@@ -68,7 +62,7 @@ with st.sidebar:
     st.metric("Episodes covered", len(set(q["episode_num"] for q in QUESTIONS)))
     st.markdown("---")
     st.caption(f"Model: `{MODEL}`")
-    st.caption("~$0.01 per generation")
+    st.caption("~$0.005 per generation")
     st.markdown("*Built for KSH — RelationSh!t Advice*")
 
 
@@ -77,7 +71,7 @@ def get_client(key: str) -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=key)
 
 
-def _save_to_sheets(theme: str, question: str, panel: str):
+def _save_to_sheets(theme: str, question: str):
     import requests as _req
     url = st.secrets.get("SHEETS_WEBAPP_URL", "")
     if not url:
@@ -87,7 +81,6 @@ def _save_to_sheets(theme: str, question: str, panel: str):
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "theme": theme,
             "question": question,
-            "panel": panel,
         }, timeout=5)
     except Exception:
         pass
@@ -95,7 +88,6 @@ def _save_to_sheets(theme: str, question: str, panel: str):
 
 for _k, _v in [
     ("generated_question", ""),
-    ("generated_panel", ""),
     ("saved_questions", []),
     ("chat_history", []),
 ]:
@@ -125,7 +117,7 @@ STRICT FORMAT RULES:
 TONE: Earnest, confused, slightly self-aware — the writer genuinely needs advice but doesn't realize how absurd their situation is."""
 
 
-def generate_question(theme: str, client: anthropic.Anthropic) -> tuple[str, str]:
+def generate_question(theme: str, client: anthropic.Anthropic) -> str:
     examples = random.sample(QUESTIONS, min(6, len(QUESTIONS)))
     examples_text = "\n\n---\n\n".join(
         [f"EXAMPLE {i+1}:\n{q['question']}" for i, q in enumerate(examples)]
@@ -145,38 +137,15 @@ Write ONE new original question in the EXACT SAME STYLE.
 {theme_instruction}
 Write ONLY the question — start directly with "I'm [age][M/F]." or "Dear Raunaq,"""
 
-    q_resp = client.messages.create(
+    resp = client.messages.create(
         model=MODEL, max_tokens=600,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    generated_q = q_resp.content[0].text.strip()
-
-    panel_prompt = f"""Write panel responses for this RSA question:
-
----
-{generated_q}
----
-
-Give responses from 3 Indian stand-up comedians. Format:
-[Name]: [2-3 funny but insightful sentences]
-
-[Name]: [different angle]
-
-[Name]: [most outrageous take]
-
-Pick names from: Sapan Verma, Sumukhi Suresh, Kunal Rao, Urooj Ashfaq, Neville Shah, Rohan Joshi, Kaneez Surka, Tanmay Bhat, Prashasti Singh, Anirban Dasgupta.
-Total 150-200 words. Start directly with first name."""
-
-    p_resp = client.messages.create(
-        model=MODEL, max_tokens=500,
-        messages=[{"role": "user", "content": panel_prompt}],
-    )
-    return generated_q, p_resp.content[0].text.strip()
+    return resp.content[0].text.strip()
 
 
 def chat_generate(user_message: str, client: anthropic.Anthropic) -> str:
-    """Interpret freeform user request and generate RSA question + panel response."""
     examples = random.sample(QUESTIONS, min(4, len(QUESTIONS)))
     examples_text = "\n\n".join([f"EXAMPLE:\n{q['question']}" for q in examples])
 
@@ -184,22 +153,11 @@ def chat_generate(user_message: str, client: anthropic.Anthropic) -> str:
 
 You are also an assistant who helps create RSA-style content. When given a freeform request, you:
 1. Understand what kind of question they want (theme, characters, situation)
-2. Generate a question in PERFECT RSA format
-3. Then generate panel responses from 3 comedians
+2. Generate ONE question in PERFECT RSA format
 
-Always respond with:
-**QUESTION:**
-[the question]
-
-**PANEL RESPONSES:**
-[Name]: [response]
-
-[Name]: [response]
-
-[Name]: [response]"""
+Write ONLY the question. No preamble, no panel responses, no explanations."""
 
     messages = []
-    # Include recent chat history for context (last 4 exchanges)
     for msg in st.session_state.chat_history[-8:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": f"""Here are some real RSA questions for style reference:
@@ -210,10 +168,10 @@ Always respond with:
 
 User request: {user_message}
 
-Generate an RSA-style question based on this request, then write panel responses. Follow the format above exactly."""})
+Write ONE RSA-style question based on this request. Start directly with "I'm [age][M/F]." or "Dear Raunaq,"""})
 
     resp = client.messages.create(
-        model=MODEL, max_tokens=900,
+        model=MODEL, max_tokens=600,
         system=system,
         messages=messages,
     )
@@ -232,9 +190,8 @@ tab_chat, tab_gen, tab_browse, tab_saved, tab_feedback = st.tabs(["💬 Chat", "
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_chat:
     st.markdown("### Chat with the Question Generator")
-    st.caption("Type anything — describe the situation, theme, characters, vibe. The AI will write the question and panel response for you.")
+    st.caption("Type anything — describe the situation, theme, characters, vibe. The AI will write the question for you.")
 
-    # Display chat history
     for msg in st.session_state.chat_history:
         if msg["role"] == "user":
             st.markdown(f'<div class="chat-label">You</div><div class="chat-bubble-user">{msg["content"]}</div>', unsafe_allow_html=True)
@@ -242,7 +199,6 @@ with tab_chat:
             content = msg["content"].replace("\n", "<br>")
             st.markdown(f'<div class="chat-label">RSA AI</div><div class="chat-bubble-ai">{content}</div>', unsafe_allow_html=True)
 
-    # Input
     with st.form("chat_form", clear_on_submit=True):
         col_input, col_btn = st.columns([5, 1])
         with col_input:
@@ -261,7 +217,7 @@ with tab_chat:
                 client = get_client(api_key)
                 reply = chat_generate(user_input.strip(), client)
                 st.session_state.chat_history.append({"role": "assistant", "content": reply})
-                _save_to_sheets("💬 Chat", user_input.strip(), reply)
+                _save_to_sheets("💬 Chat", reply)
             except anthropic.AuthenticationError:
                 st.error("Invalid API key.")
             except anthropic.RateLimitError:
@@ -286,7 +242,7 @@ with tab_chat:
                     client = get_client(api_key)
                     reply = chat_generate(st.session_state.chat_history[-1]["content"], client)
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
-                    _save_to_sheets("🎲 Surprise", st.session_state.chat_history[-2]["content"], reply)
+                    _save_to_sheets("🎲 Surprise", reply)
                 except Exception as e:
                     st.error(str(e))
             st.rerun()
@@ -294,8 +250,7 @@ with tab_chat:
         if st.button("💾 Save last to Saved", use_container_width=True):
             ai_msgs = [m for m in st.session_state.chat_history if m["role"] == "assistant"]
             if ai_msgs:
-                last = ai_msgs[-1]["content"]
-                entry = {"question": last, "panel": "", "theme": "💬 Chat"}
+                entry = {"question": ai_msgs[-1]["content"], "theme": "💬 Chat"}
                 if entry not in st.session_state.saved_questions:
                     st.session_state.saved_questions.append(entry)
                     st.success("Saved!")
@@ -303,7 +258,6 @@ with tab_chat:
         if st.button("🗑️ Clear chat", use_container_width=True):
             st.session_state.chat_history = []
             st.rerun()
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -321,10 +275,9 @@ with tab_gen:
             with st.spinner("Generating..."):
                 try:
                     client = get_client(api_key)
-                    q, p = generate_question(selected_theme, client)
+                    q = generate_question(selected_theme, client)
                     st.session_state.generated_question = q
-                    st.session_state.generated_panel = p
-                    _save_to_sheets(selected_theme, q, p)
+                    _save_to_sheets(selected_theme, q)
                 except anthropic.AuthenticationError:
                     st.error("Invalid API key.")
                 except anthropic.RateLimitError:
@@ -339,16 +292,12 @@ with tab_gen:
             col_save, col_dl = st.columns(2)
             with col_save:
                 if st.button("⭐ Save", use_container_width=True):
-                    entry = {"question": st.session_state.generated_question, "panel": st.session_state.generated_panel, "theme": selected_theme}
+                    entry = {"question": st.session_state.generated_question, "theme": selected_theme}
                     if entry not in st.session_state.saved_questions:
                         st.session_state.saved_questions.append(entry)
                         st.success("Saved!")
             with col_dl:
-                st.download_button("📋 Download", data=f"QUESTION:\n{st.session_state.generated_question}\n\nPANEL:\n{st.session_state.generated_panel}", file_name="rsa_question.txt", mime="text/plain", use_container_width=True)
-
-    if st.session_state.generated_panel:
-        st.markdown("### Panel Responses")
-        st.markdown(f'<div class="panel-card">{st.session_state.generated_panel.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+                st.download_button("📋 Download", data=st.session_state.generated_question, file_name="rsa_question.txt", mime="text/plain", use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -388,15 +337,13 @@ with tab_saved:
     else:
         st.markdown(f"**{len(st.session_state.saved_questions)} saved**")
         all_text = ("\n\n" + "=" * 60 + "\n\n").join(
-            f"[{i+1}] {s['theme']}\n\n{s['question']}\n\nPANEL:\n{s['panel']}"
+            f"[{i+1}] {s['theme']}\n\n{s['question']}"
             for i, s in enumerate(st.session_state.saved_questions)
         )
         st.download_button("📥 Download All", data=all_text, file_name="rsa_saved_questions.txt", mime="text/plain")
         for i, saved in enumerate(st.session_state.saved_questions):
             with st.expander(f"[{i+1}] {saved['theme']} — {saved['question'][:60]}...", expanded=False):
                 st.markdown(f'<div class="question-card">{saved["question"]}</div>', unsafe_allow_html=True)
-                if saved.get("panel"):
-                    st.markdown(f'<div class="panel-card">{saved["panel"].replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
                 if st.button("🗑️ Remove", key=f"del_{i}"):
                     st.session_state.saved_questions.pop(i)
                     st.rerun()
@@ -406,6 +353,7 @@ with tab_saved:
 # TAB 5 — FEEDBACK
 # ══════════════════════════════════════════════════════════════════════════════
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback_log.json")
+
 
 def _get_supabase():
     try:
@@ -417,6 +365,7 @@ def _get_supabase():
     except Exception:
         pass
     return None
+
 
 def load_feedback():
     client = _get_supabase()
@@ -434,6 +383,7 @@ def load_feedback():
             return []
     return []
 
+
 def save_feedback(entry):
     client = _get_supabase()
     if client:
@@ -447,11 +397,11 @@ def save_feedback(entry):
     with open(FEEDBACK_FILE, "w") as f:
         json.dump(entries, f, indent=2)
 
+
 with tab_feedback:
     st.markdown("### 📝 Team Feedback")
-    st.caption("Rate generated questions, suggest improvements, and help make the AI better. All feedback is saved locally and visible to the whole team.")
+    st.caption("Rate generated questions, suggest improvements, and help make the AI better.")
 
-    # ── Submit new feedback ────────────────────────────────────────────────
     st.markdown("#### Submit Feedback on a Generated Question")
 
     with st.form("feedback_form"):
@@ -480,8 +430,6 @@ with tab_feedback:
                 "Too long",
                 "Twist isn't surprising enough",
                 "Not Indian enough",
-                "Panel response is weak",
-                "Panel response is off-brand",
                 "Great — nothing wrong!",
             ],
         )
@@ -522,14 +470,12 @@ with tab_feedback:
 
     st.markdown("---")
 
-    # ── View all feedback ──────────────────────────────────────────────────
     all_fb = load_feedback()
     st.markdown(f"#### All Feedback ({len(all_fb)} entries)")
 
     if not all_fb:
         st.info("No feedback yet. Generate a question, then come here to rate it!")
     else:
-        # Summary stats
         ratings = [f["rating"] for f in all_fb]
         avg = sum(ratings) / len(ratings)
         col1, col2, col3 = st.columns(3)
@@ -537,7 +483,6 @@ with tab_feedback:
         col2.metric("Avg Rating", f"{avg:.1f} / 5")
         col3.metric("5-Star Count", ratings.count(5))
 
-        # Issue frequency
         from collections import Counter
         all_issues = [issue for f in all_fb for issue in f.get("issues", [])]
         if all_issues:
@@ -547,7 +492,6 @@ with tab_feedback:
 
         st.markdown("---")
 
-        # Individual entries
         for i, fb in enumerate(reversed(all_fb)):
             stars = "⭐" * fb["rating"] + "☆" * (5 - fb["rating"])
             label = f"[{fb['timestamp']}] {fb['name']} — {stars} — {fb['question'][:50]}..."
@@ -560,11 +504,10 @@ with tab_feedback:
                 st.markdown(f'<div class="question-card">{fb["question"]}</div>', unsafe_allow_html=True)
                 if fb.get("better_version"):
                     st.markdown("**Suggested improvement:**")
-                    st.markdown(f'<div class="panel-card">{fb["better_version"]}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="question-card">{fb["better_version"]}</div>', unsafe_allow_html=True)
                 if fb.get("extra_notes"):
                     st.markdown(f"**Extra notes:** {fb['extra_notes']}")
 
-        # Download all feedback
         fb_text = json.dumps(all_fb, indent=2)
         st.download_button(
             "📥 Download All Feedback (JSON)",
