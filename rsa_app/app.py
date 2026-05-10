@@ -71,6 +71,27 @@ def get_client(key: str) -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=key)
 
 
+@st.cache_data(ttl=300)
+def load_learned_questions() -> list[str]:
+    """Pull all questions from Feedback + Generations sheets as extra training examples. Refreshes every 5 min."""
+    import csv, io, requests as _req
+    sheet_id = "1HhpraqRGmjtAcHy1uq9pKL9eSk5mkOKOZNFtBGv_Mt8"
+    learned = []
+    for sheet_name, q_col in [("Feedback", "Better Version"), ("Feedback", "Question"), ("Generations", "Question")]:
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+        try:
+            resp = _req.get(url, timeout=5)
+            if resp.status_code != 200:
+                continue
+            for row in csv.DictReader(io.StringIO(resp.text)):
+                q = row.get(q_col, "").strip()
+                if q and len(q) > 40 and q not in learned:
+                    learned.append(q)
+        except Exception:
+            continue
+    return learned
+
+
 def _save_to_sheets(theme: str, question: str):
     import requests as _req
     url = st.secrets.get("SHEETS_WEBAPP_URL", "")
@@ -90,9 +111,23 @@ for _k, _v in [
     ("generated_question", ""),
     ("saved_questions", []),
     ("chat_history", []),
+    ("dislike_pending", None),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
+
+
+def _quick_feedback(question: str, liked: bool, why: str = ""):
+    save_feedback({
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "name": "Quick Feedback",
+        "question": question,
+        "rating": 5 if liked else 1,
+        "issues": why,
+        "better_version": "",
+        "theme_worked": "Yes" if liked else "No",
+        "extra_notes": "",
+    })
 
 THEMES = [
     "🎲 Random", "💔 Cheating & Betrayal", "💑 Long Distance",
@@ -117,11 +152,18 @@ STRICT FORMAT RULES:
 TONE: Earnest, confused, slightly self-aware — the writer genuinely needs advice but doesn't realize how absurd their situation is."""
 
 
+def _build_examples() -> str:
+    learned = load_learned_questions()
+    learned_sample = random.sample(learned, min(3, len(learned))) if learned else []
+    db_needed = max(3, 6 - len(learned_sample))
+    db_sample = [q["question"] for q in random.sample(QUESTIONS, min(db_needed, len(QUESTIONS)))]
+    all_examples = learned_sample + db_sample
+    random.shuffle(all_examples)
+    return "\n\n---\n\n".join(f"EXAMPLE {i+1}:\n{q}" for i, q in enumerate(all_examples))
+
+
 def generate_question(theme: str, client: anthropic.Anthropic) -> str:
-    examples = random.sample(QUESTIONS, min(6, len(QUESTIONS)))
-    examples_text = "\n\n---\n\n".join(
-        [f"EXAMPLE {i+1}:\n{q['question']}" for i, q in enumerate(examples)]
-    )
+    examples_text = _build_examples()
     theme_instruction = (
         "Pick a random relationship problem theme."
         if "Random" in theme
@@ -146,8 +188,7 @@ Write ONLY the question — start directly with "I'm [age][M/F]." or "Dear Rauna
 
 
 def chat_generate(user_message: str, client: anthropic.Anthropic) -> str:
-    examples = random.sample(QUESTIONS, min(4, len(QUESTIONS)))
-    examples_text = "\n\n".join([f"EXAMPLE:\n{q['question']}" for q in examples])
+    examples_text = _build_examples()
 
     system = SYSTEM_PROMPT + """
 
@@ -226,7 +267,7 @@ with tab_chat:
                 st.error(f"API error: {e}")
         st.rerun()
 
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
     with col_a:
         if st.button("🎲 Surprise me", use_container_width=True, disabled=not api_key):
             prompts = [
@@ -247,7 +288,7 @@ with tab_chat:
                     st.error(str(e))
             st.rerun()
     with col_b:
-        if st.button("💾 Save last to Saved", use_container_width=True):
+        if st.button("💾 Save last", use_container_width=True):
             ai_msgs = [m for m in st.session_state.chat_history if m["role"] == "assistant"]
             if ai_msgs:
                 entry = {"question": ai_msgs[-1]["content"], "theme": "💬 Chat"}
@@ -255,9 +296,29 @@ with tab_chat:
                     st.session_state.saved_questions.append(entry)
                     st.success("Saved!")
     with col_c:
-        if st.button("🗑️ Clear chat", use_container_width=True):
+        if st.button("🗑️ Clear", use_container_width=True):
             st.session_state.chat_history = []
             st.rerun()
+    with col_d:
+        if st.button("👍", use_container_width=True, key="chat_like"):
+            ai_msgs = [m for m in st.session_state.chat_history if m["role"] == "assistant"]
+            if ai_msgs:
+                _quick_feedback(ai_msgs[-1]["content"], liked=True)
+                st.session_state.dislike_pending = None
+                st.toast("Saved — thanks!")
+    with col_e:
+        if st.button("👎", use_container_width=True, key="chat_dislike"):
+            ai_msgs = [m for m in st.session_state.chat_history if m["role"] == "assistant"]
+            if ai_msgs:
+                st.session_state.dislike_pending = ("chat", ai_msgs[-1]["content"])
+
+    if st.session_state.dislike_pending and st.session_state.dislike_pending[0] == "chat":
+        with st.form("chat_dislike_form", clear_on_submit=True):
+            why = st.text_input("What's wrong with it?", placeholder="Too generic, wrong format, not funny...")
+            if st.form_submit_button("Submit ➤"):
+                _quick_feedback(st.session_state.dislike_pending[1], liked=False, why=why)
+                st.session_state.dislike_pending = None
+                st.toast("Got it — will improve!")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -289,7 +350,7 @@ with tab_gen:
         if st.session_state.generated_question:
             st.markdown("### Generated Question")
             st.markdown(f'<div class="question-card">{st.session_state.generated_question}</div>', unsafe_allow_html=True)
-            col_save, col_dl = st.columns(2)
+            col_save, col_dl, col_like, col_dislike = st.columns(4)
             with col_save:
                 if st.button("⭐ Save", use_container_width=True):
                     entry = {"question": st.session_state.generated_question, "theme": selected_theme}
@@ -297,7 +358,23 @@ with tab_gen:
                         st.session_state.saved_questions.append(entry)
                         st.success("Saved!")
             with col_dl:
-                st.download_button("📋 Download", data=st.session_state.generated_question, file_name="rsa_question.txt", mime="text/plain", use_container_width=True)
+                st.download_button("📋 Copy", data=st.session_state.generated_question, file_name="rsa_question.txt", mime="text/plain", use_container_width=True)
+            with col_like:
+                if st.button("👍", use_container_width=True, key="gen_like"):
+                    _quick_feedback(st.session_state.generated_question, liked=True)
+                    st.session_state.dislike_pending = None
+                    st.toast("Saved — thanks!")
+            with col_dislike:
+                if st.button("👎", use_container_width=True, key="gen_dislike"):
+                    st.session_state.dislike_pending = ("gen", st.session_state.generated_question)
+
+            if st.session_state.dislike_pending and st.session_state.dislike_pending[0] == "gen":
+                with st.form("gen_dislike_form", clear_on_submit=True):
+                    why = st.text_input("What's wrong with it?", placeholder="Too generic, wrong format, not funny...")
+                    if st.form_submit_button("Submit ➤"):
+                        _quick_feedback(st.session_state.dislike_pending[1], liked=False, why=why)
+                        st.session_state.dislike_pending = None
+                        st.toast("Got it — will improve!")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
