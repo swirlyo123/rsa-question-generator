@@ -304,8 +304,6 @@ with tab_chat:
             st.session_state.chat_history = []
             st.rerun()
 
-    if not api_key:
-        st.info("👈 API key loading... if this persists, add it in the sidebar.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
